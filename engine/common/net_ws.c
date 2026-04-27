@@ -1333,26 +1333,54 @@ queue normal and lagged packets
 static qboolean NET_QueuePacket( netsrc_t sock, netadr_t *from, byte *data, size_t *length )
 {
 	byte		buf[NET_MAX_FRAGMENT];
-	int		ret, protocol;
-	int		net_socket;
+	int		ret;
+	int		net_socket[2];
 	WSAsize_t	addr_len;
 	struct sockaddr_storage	addr = { 0 };
+	fd_set		fdset;
+	int		maxfd = -1;
 
 	*length = 0;
 
-	for( protocol = 0; protocol < 2; protocol++ )
-	{
-		switch( protocol )
-		{
-		case 0: net_socket = net.ip_sockets[sock]; break;
-		case 1: net_socket = net.ip6_sockets[sock]; break;
-		}
+	net_socket[0] = net.ip_sockets[sock];
+	net_socket[1] = net.ip6_sockets[sock];
 
-		if( !NET_IsSocketValid( net_socket ))
+	FD_ZERO( &fdset );
+
+	for( int i = 0; i < 2; i++ )
+	{
+		if( NET_IsSocketValid( net_socket[i] ))
+		{
+			FD_SET( net_socket[i], &fdset );
+			if( maxfd < net_socket[i] )
+				maxfd = net_socket[i];
+		}
+	}
+
+	if( maxfd < 0 )
+		return NET_LagPacket( false, sock, from, length, data );
+
+	struct timeval tv = { 0, 0 };
+	ret = select( maxfd + 1, &fdset, NULL, NULL, &tv );
+
+	if( ret == 0 )
+		return NET_LagPacket( false, sock, from, length, data );
+
+	if( ret < 0 )
+	{
+		Con_DPrintf( S_ERROR "%s: %s\n", __func__, NET_ErrorString() );
+		return NET_LagPacket( false, sock, from, length, data );
+	}
+
+	for( int i = 0; i < 2; i++ )
+	{
+		if( !NET_IsSocketValid( net_socket[i] ))
+			continue;
+		if( !FD_ISSET( net_socket[i], &fdset ))
 			continue;
 
 		addr_len = sizeof( addr );
-		ret = recvfrom( net_socket, buf, sizeof( buf ), 0, (struct sockaddr *)&addr, &addr_len );
+		ret = recvfrom( net_socket[i], buf, sizeof( buf ), 0, (struct sockaddr *)&addr, &addr_len );
 
 		NET_SockadrToNetadr( &addr, from );
 
